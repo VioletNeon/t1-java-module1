@@ -14,12 +14,7 @@ import java.lang.annotation.Annotation;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Comparator;
-import java.util.List;
-import java.util.EnumMap;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
 public class TestRunner {
@@ -27,24 +22,11 @@ public class TestRunner {
         // Проверка возможности создания экземпляра тестового класса
         checkConstructor(testClass);
 
-        // Сбор аннотаций
-        List<Method> testMethods = getAnnotatedMethods(testClass, Test.class);
-        List<Method> beforeEachMethods = getAnnotatedMethods(testClass, BeforeEach.class);
-        List<Method> afterEachMethods = getAnnotatedMethods(testClass, AfterEach.class);
-        List<Method> beforeSuiteMethods = getAnnotatedMethods(testClass, BeforeSuite.class);
-        List<Method> afterSuiteMethods = getAnnotatedMethods(testClass, AfterSuite.class);
-
-        // Проверка статических методов
-        validateMethodTypes(
-            testMethods,
-            beforeEachMethods,
-            afterEachMethods,
-            beforeSuiteMethods,
-            afterSuiteMethods
-        );
+        // Сбор и валидация аннотаций
+        Map<String, List<Method>> methods = getAnnotatedMethods(testClass);
 
         // Сортировка тестов
-        List<Method> sortedTests = sortTestMethods(testMethods);
+        List<Method> sortedTests = sortTestMethods(methods.get(Test.class.getSimpleName()));
 
         // Создание экземпляра класса
         Object testInstance = createInstance(testClass);
@@ -57,21 +39,60 @@ public class TestRunner {
 
         try {
             // @BeforeSuite
-            executeMethods(beforeSuiteMethods, null);
+            executeMethods(methods.get(BeforeSuite.class.getSimpleName()), null);
 
             // Выполнение тестов
             for (Method testMethod : sortedTests) {
-                TestDetails test = executeTest(testMethod, testInstance, beforeEachMethods, afterEachMethods);
+                TestDetails test = executeTest(
+                        testMethod,
+                        testInstance,
+                        methods.get(BeforeEach.class.getSimpleName()),
+                        methods.get(AfterEach.class.getSimpleName())
+                );
                 results.get(test.getResultType()).add(test);
             }
 
             // @AfterSuite
-            executeMethods(afterSuiteMethods, null);
+            executeMethods(methods.get(AfterSuite.class.getSimpleName()), null);
         } catch (Exception e) {
             throw new RuntimeException("Ошибка при выполнении тестов", e);
         }
 
         return results;
+    }
+
+    public static Map<String, List<Method>> getAnnotatedMethods(Class<?> c) {
+        Map<String, List<Method>> methods = new HashMap<>();
+
+        for (Method method : c.getDeclaredMethods()) {
+            var isStaticMethod = Modifier.isStatic(method.getModifiers());
+
+            for (Annotation annotation : method.getDeclaredAnnotations()) {
+                var annotationSimpleName = annotation.annotationType().getSimpleName();
+                var annotationName = annotation.annotationType().getName();
+                var isStaticAnnotation =
+                        annotationName.equals(BeforeSuite.class.getName()) ||
+                        annotationName.equals(AfterSuite.class.getName());
+                var isNonStaticAnnotation =
+                        annotationName.equals(Test.class.getName()) ||
+                        annotationName.equals(AfterEach.class.getName()) ||
+                        annotationName.equals(BeforeEach.class.getName());
+
+                if (isNonStaticAnnotation && isStaticMethod) {
+                    throw new BadTestClassError(annotationSimpleName + " метод не может быть статическим: " + method.getName());
+                }
+
+                if (isStaticAnnotation && !isStaticMethod) {
+                    throw new BadTestClassError(annotationSimpleName + " метод должен быть статическим: " + method.getName());
+                }
+
+                methods
+                    .computeIfAbsent(annotationSimpleName, k -> new ArrayList<>())
+                    .add(method);
+            }
+        }
+
+        return methods;
     }
 
     private static void checkConstructor(Class<?> c) {
@@ -94,68 +115,25 @@ public class TestRunner {
         }
     }
 
-    private static List<Method> getAnnotatedMethods(Class<?> c, Class<? extends Annotation> annotation) {
-        return Arrays.stream(c.getDeclaredMethods())
-                .filter(method -> method.isAnnotationPresent(annotation))
-                .collect(Collectors.toList());
-    }
-
-    private static void validateMethodTypes(
-        List<Method> testMethods,
-        List<Method> beforeEach,
-        List<Method> afterEach,
-        List<Method> beforeSuite,
-        List<Method> afterSuite
-    ) {
-        // @Test, @BeforeEach, @AfterEach не должны быть статическими
-        for (Method m : testMethods) {
-            if (Modifier.isStatic(m.getModifiers())) {
-                throw new BadTestClassError("@Test метод не может быть статическим: " + m.getName());
-            }
-        }
-
-        for (Method m : beforeEach) {
-            if (Modifier.isStatic(m.getModifiers())) {
-                throw new BadTestClassError("@BeforeEach метод не может быть статическим: " + m.getName());
-            }
-        }
-
-        for (Method m : afterEach) {
-            if (Modifier.isStatic(m.getModifiers())) {
-                throw new BadTestClassError("@AfterEach метод не может быть статическим: " + m.getName());
-            }
-        }
-
-        // @BeforeSuite, @AfterSuite должны быть статическими
-        for (Method m : beforeSuite) {
-            if (!Modifier.isStatic(m.getModifiers())) {
-                throw new BadTestClassError("@BeforeSuite метод должен быть статическим: " + m.getName());
-            }
-        }
-        for (Method m : afterSuite) {
-            if (!Modifier.isStatic(m.getModifiers())) {
-                throw new BadTestClassError("@AfterSuite метод должен быть статическим: " + m.getName());
-            }
-        }
-    }
-
     private static List<Method> sortTestMethods(List<Method> methods) {
         return methods
                 .stream()
                 .sorted(
                    Comparator
-                   .comparing((Method m) -> m.getAnnotation(Test.class).priority(), Comparator.reverseOrder())
-                   .thenComparing(m -> {
+                   .comparing((Method m) -> {
                        Order order = m.getAnnotation(Order.class);
 
                        return order != null ? order.value() : 5;
                    })
+                   .thenComparing((Method m) -> m.getAnnotation(Test.class).priority(), Comparator.reverseOrder())
                    .thenComparing(Method::getName)
                 )
                 .collect(Collectors.toList());
     }
 
     private static void executeMethods(List<Method> methods, Object instance) {
+        if (methods == null) return;
+
         for (Method method : methods) {
             try {
                 method.setAccessible(true);
