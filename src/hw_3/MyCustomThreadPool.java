@@ -5,12 +5,12 @@ import java.util.LinkedList;
 import java.util.List;
 
 public class MyCustomThreadPool {
-    List<Thread> workers = new ArrayList<>();
-    final LinkedList<Runnable> taskQueue = new LinkedList<>();
+    private final List<Thread> workers = new ArrayList<>();
+    private final LinkedList<Runnable> taskQueue = new LinkedList<>();
     private volatile boolean isRunning = true;
 
     public MyCustomThreadPool(int capacity) {
-        for (int i = 0; i <= capacity; i++) {
+        for (int i = 0; i < capacity; i++) {
             var name = "Worker N" + i;
 
             Thread worker = new Thread(() -> {
@@ -47,7 +47,6 @@ public class MyCustomThreadPool {
 
     public void execute(Runnable task) {
         if (!isRunning) {
-            awaitTermination();
             throw new IllegalStateException("Thread pull disabled");
         }
 
